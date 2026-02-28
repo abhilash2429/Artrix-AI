@@ -50,7 +50,7 @@ async def run_ingestion(
     file_type = filepath.suffix.lstrip(".").lower()
 
     # Instantiate services outside of FastAPI DI
-    llm = GeminiProvider(api_key=settings.gemini_api_key, model="gemini-1.5-flash")
+    llm = GeminiProvider(api_key=settings.gemini_api_key, model="gemini-2.5-flash")
     qdrant = QdrantService(qdrant_client)
     redis = RedisClient(redis_client)
 
