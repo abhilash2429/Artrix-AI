@@ -16,7 +16,7 @@ from app.core.exceptions import QdrantConnectionError
 
 logger = structlog.get_logger(__name__)
 
-_VECTOR_DIM = 768  # text-embedding-004 output dimension
+_VECTOR_DIM = 3072  # gemini-embedding-001 output dimension
 _DISTANCE = qmodels.Distance.COSINE
 
 _client: AsyncQdrantClient = AsyncQdrantClient(
@@ -74,7 +74,7 @@ class QdrantService:
     async def create_collection_if_not_exists(self, tenant_id: str | uuid.UUID) -> str:
         """Ensure a collection exists for the tenant. Returns the collection name.
 
-        Creates with cosine distance and 768-dim vectors (text-embedding-004).
+        Creates with cosine distance and 3072-dim vectors (gemini-embedding-001).
         Idempotent — safe to call on every request.
         """
         name = _collection_name(tenant_id)
@@ -95,6 +95,15 @@ class QdrantService:
             raise QdrantConnectionError(
                 f"Failed to create/check Qdrant collection '{name}': {e}"
             ) from e
+
+    async def collection_point_count(self, tenant_id: str | uuid.UUID) -> int:
+        """Return the number of points in a tenant's collection. 0 if missing."""
+        name = _collection_name(tenant_id)
+        try:
+            info = await self._q.get_collection(collection_name=name)
+            return info.points_count or 0
+        except Exception:
+            return 0
 
     # -- Vector operations ---------------------------------------------------
 
