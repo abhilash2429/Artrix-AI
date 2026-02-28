@@ -45,6 +45,25 @@ class IntentRouter:
     def __init__(self, llm: LLMProvider) -> None:
         self._llm = llm
 
+    @staticmethod
+    def _parse_intent_label(raw: str) -> IntentType | None:
+        """Parse classifier output into an IntentType.
+
+        Accepts exact matches and common prefix truncations that Gemini
+        produces due to low max_tokens. This is not heuristic intent
+        inference — the LLM already decided, we are just parsing its
+        output robustly.
+        """
+        cleaned = raw.strip().lower().strip("`\"'.,:;!?()[]{}")
+        # Exact match
+        if cleaned in {t.value for t in IntentType}:
+            return IntentType(cleaned)
+        # Gemini frequently truncates to prefix — match unambiguous prefixes
+        for intent_type in IntentType:
+            if intent_type.value.startswith(cleaned) and len(cleaned) >= 4:
+                return intent_type
+        return None
+
     # ~50 input tokens + 1 output token per call.
     # Latency target: <300ms. This runs before every user turn.
     # Default fallback is DOMAIN_QUERY — retrieval runs on ambiguity,
@@ -74,29 +93,59 @@ class IntentRouter:
         try:
             result = await self._llm.generate(
                 prompt=prompt,
-                system_prompt="You are a precise classifier. Reply with one word only.",
-                max_tokens=5,
+                system_prompt=(
+                    "You are a precise classifier. "
+                    "Reply with exactly one label: "
+                    "conversational, domain_query, or out_of_scope."
+                ),
+                max_tokens=20,
             )
-            raw = result.text.strip().lower()
-            try:
-                intent = IntentType(raw)
-                logger.debug(
-                    "intent_classified",
-                    intent=intent.value,
-                    message_len=len(message),
-                )
-                return intent
-            except ValueError:
+            raw = result.text
+            intent = self._parse_intent_label(raw)
+            if intent is None:
                 logger.warning(
                     "intent_classification_unexpected_output",
-                    raw_response=raw,
+                    raw_response=raw.strip().lower(),
                     message_len=len(message),
                 )
-                return IntentType.DOMAIN_QUERY
+                retry = await self._llm.generate(
+                    prompt=(
+                        "Return exactly one label for this user message:\n"
+                        f"\"{message}\"\n\n"
+                        "Allowed labels:\n"
+                        "- conversational\n"
+                        "- domain_query\n"
+                        "- out_of_scope\n\n"
+                        "Return only the label."
+                    ),
+                    system_prompt="Return exactly one allowed label only.",
+                    max_tokens=10,
+                )
+                retry_raw = retry.text
+                intent = self._parse_intent_label(retry_raw)
+            if intent is None:
+                logger.warning(
+                    "intent_classification_retry_failed",
+                    message_len=len(message),
+                )
+                # Both attempts failed to produce a valid label.
+                # Default to CONVERSATIONAL — this avoids triggering
+                # retrieval + escalation on simple greetings when the
+                # classifier returns empty/blocked responses.
+                return IntentType.CONVERSATIONAL
+            logger.debug(
+                "intent_classified",
+                intent=intent.value,
+                message_len=len(message),
+            )
+            return intent
         except Exception as e:
             logger.warning(
                 "intent_classification_failed",
                 error=str(e),
                 message_len=len(message),
             )
-            return IntentType.DOMAIN_QUERY
+            # LLM completely failed (timeout, blocked, network error).
+            # Default to CONVERSATIONAL to avoid unnecessary retrieval
+            # and escalation on simple inputs.
+            return IntentType.CONVERSATIONAL
