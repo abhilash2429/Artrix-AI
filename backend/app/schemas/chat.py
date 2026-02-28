@@ -38,6 +38,7 @@ class ChatMessageResponse(BaseModel):
     escalation_required: bool = False
     escalation_reason: str | None = None
     latency_ms: int
+    intent_type: str | None = None
 
 
 class StreamDelta(BaseModel):
