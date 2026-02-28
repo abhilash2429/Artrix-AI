@@ -103,11 +103,11 @@ class TestIntentRouter:
         assert result == IntentType.OUT_OF_SCOPE
 
     @pytest.mark.asyncio
-    async def test_unexpected_string_falls_back_to_domain_query(self) -> None:
+    async def test_unexpected_string_falls_back_to_conversational(self) -> None:
         llm = _make_mock_llm("unknown")
         router = IntentRouter(llm)
         result = await router.classify("something weird", _VERTICAL, _ALLOWED_TOPICS)
-        assert result == IntentType.DOMAIN_QUERY
+        assert result == IntentType.CONVERSATIONAL
 
     @pytest.mark.asyncio
     async def test_whitespace_is_stripped(self) -> None:
@@ -119,16 +119,23 @@ class TestIntentRouter:
         assert result == IntentType.DOMAIN_QUERY
 
     @pytest.mark.asyncio
-    async def test_timeout_falls_back_to_domain_query(self) -> None:
+    async def test_timeout_falls_back_to_conversational(self) -> None:
         llm = _make_timeout_llm()
         router = IntentRouter(llm)
-        # Must not raise — should return DOMAIN_QUERY as safe default
+        # Must not raise — should return CONVERSATIONAL as safe default
         result = await router.classify("I need help", _VERTICAL, _ALLOWED_TOPICS)
-        assert result == IntentType.DOMAIN_QUERY
+        assert result == IntentType.CONVERSATIONAL
 
     @pytest.mark.asyncio
     async def test_uppercase_response_is_case_insensitive(self) -> None:
         llm = _make_mock_llm("CONVERSATIONAL")
         router = IntentRouter(llm)
         result = await router.classify("hey!", _VERTICAL, _ALLOWED_TOPICS)
+        assert result == IntentType.CONVERSATIONAL
+
+    @pytest.mark.asyncio
+    async def test_truncated_label_parsed_by_prefix(self) -> None:
+        llm = _make_mock_llm("convers")
+        router = IntentRouter(llm)
+        result = await router.classify("hello", _VERTICAL, _ALLOWED_TOPICS)
         assert result == IntentType.CONVERSATIONAL
