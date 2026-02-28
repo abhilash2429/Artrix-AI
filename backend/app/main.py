@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.llm_provider = GeminiProvider(
         api_key=settings.gemini_api_key,
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
     )
 
     # Start APScheduler for idle session cleanup every 5 minutes
