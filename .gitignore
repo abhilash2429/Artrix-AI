@@ -15,6 +15,7 @@ env/
 
 # Environment files
 .env
+.env.local
 
 # IDE
 .vscode/
@@ -36,6 +37,11 @@ alembic/versions/__pycache__/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
 
 # Temp
 create_dirs.bat

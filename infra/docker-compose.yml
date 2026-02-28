@@ -1,12 +1,14 @@
 version: '3.9'
 services:
   api:
-    build: .
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
     ports: ["8000:8000"]
-    env_file: .env
+    env_file: ../.env
     depends_on: [postgres, redis, qdrant]
     volumes:
-      - .:/app
+      - ../backend:/app
 
   postgres:
     image: postgres:15
