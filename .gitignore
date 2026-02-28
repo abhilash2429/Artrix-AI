@@ -52,3 +52,4 @@ pnpm-debug.log*
 
 # Project temp files
 create_dirs.bat
+.next
