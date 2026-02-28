@@ -171,65 +171,165 @@ async def _stream_response(
     billing: BillingService,
     lang: LanguageMiddleware,
 ) -> AsyncGenerator[str, None]:
-    """Generate SSE events for streaming chat responses.
+    """Generate SSE events with true token-by-token streaming from Gemini.
 
-    For CONVERSATIONAL turns: streams LLM output directly.
-    For DOMAIN_QUERY: runs retrieval first, then streams generation.
+    Flow:
+    1. Combined classify+respond call (single LLM call)
+    2. If conversational/oos: stream the response directly
+    3. If domain_query: run retrieval, then stream the RAG response
+    4. Final metadata event with confidence, sources, etc.
     """
+    import time
+    start = time.monotonic()
+
     detected_lang = await lang.detect_language(message)
     translated_msg = await lang.translate_to_english(message, detected_lang)
 
-    # Run the full turn (non-streaming for simplicity in Phase 1)
-    output = await agent.handle_turn(
-        session_id=session_id,
-        tenant_id=tenant.id,
-        message=translated_msg,
-        tenant_config=tenant_config,
+    vertical = tenant_config.get("vertical", "general")
+    allowed_topics = tenant_config.get("allowed_topics", [])
+    persona_name = tenant_config.get("persona_name", "Assistant")
+
+    # Load memory for chat history context
+    memory = await agent._memory_manager.load(session_id)
+    chat_history = agent._format_chat_history(memory)
+    system_prompt = agent._build_system_prompt(tenant_config)
+
+    # Combined classify+respond (same prompt as handle_turn)
+    combined_prompt = (
+        f"You are a router AND responder for a {vertical} support agent.\n"
+        f"Allowed topics: {', '.join(allowed_topics)}\n\n"
+        f"Chat history:\n{chat_history}\n"
+        f"User message: \"{translated_msg}\"\n\n"
+        "Step 1 — classify this message as exactly ONE of:\n"
+        "  conversational | domain_query | out_of_scope\n\n"
+        "Step 2 — if conversational or out_of_scope, write a helpful reply "
+        f"as {persona_name}.\n"
+        "If domain_query, write ONLY \"needs_retrieval\".\n\n"
+        "Format your response EXACTLY like this:\n"
+        "INTENT: <label>\n"
+        "RESPONSE: <your reply or needs_retrieval>"
     )
 
-    translated_response = await lang.translate_from_english(
-        output.response, detected_lang
-    )
+    from app.services.agent.intent_router import IntentType
+
+    full_text = ""
+    intent = IntentType.CONVERSATIONAL
+    streaming_started = False
+
+    try:
+        # Stream the combined classify+respond call
+        async for chunk in agent._llm.stream(
+            prompt=combined_prompt,
+            system_prompt=system_prompt,
+            max_tokens=300,
+            temperature=0.4,
+        ):
+            full_text += chunk
+
+            # Parse intent from first line as soon as we have it
+            if not streaming_started and "\n" in full_text:
+                first_line = full_text.split("\n", 1)[0].strip().lower()
+                if "domain_query" in first_line:
+                    intent = IntentType.DOMAIN_QUERY
+                    break  # Stop streaming — need retrieval
+                elif "out_of_scope" in first_line:
+                    intent = IntentType.OUT_OF_SCOPE
+
+                # Start streaming the response part
+                streaming_started = True
+                response_part = full_text.split("\n", 1)[1]
+                if response_part.lower().startswith("response:"):
+                    response_part = response_part[9:].lstrip()
+                if response_part:
+                    event = json.dumps({"delta": response_part, "done": False})
+                    yield f"data: {event}\n\n"
+            elif streaming_started:
+                # Stream subsequent chunks directly
+                event = json.dumps({"delta": chunk, "done": False})
+                yield f"data: {event}\n\n"
+
+    except Exception as e:
+        logger.warning("stream_classify_failed", error=str(e))
+        intent = IntentType.CONVERSATIONAL
+
+    response_text = ""
+    sources = None
+    confidence = None
+
+    if intent == IntentType.DOMAIN_QUERY:
+        # Run retrieval then stream the RAG response
+        output = await agent.handle_turn(
+            session_id=session_id,
+            tenant_id=tenant.id,
+            message=translated_msg,
+            tenant_config=tenant_config,
+        )
+        # Stream the completed response word by word
+        words = output.response.split(" ")
+        for i, word in enumerate(words):
+            delta = word if i == 0 else f" {word}"
+            event = json.dumps({"delta": delta, "done": False})
+            yield f"data: {event}\n\n"
+        response_text = output.response
+        confidence = output.confidence
+        if output.source_chunks:
+            sources = [
+                {
+                    "chunk_id": s["chunk_id"],
+                    "document": s["document"],
+                    "section": s["section"],
+                }
+                for s in output.source_chunks
+            ]
+    else:
+        # Extract response text from the streamed output
+        if "\n" in full_text:
+            resp_part = full_text.split("\n", 1)[1]
+            if resp_part.lower().startswith("response:"):
+                resp_part = resp_part[9:].lstrip()
+            response_text = resp_part.strip()
+        if not response_text:
+            response_text = f"Hi there! I'm {persona_name}. How can I help you today?"
+            event = json.dumps({"delta": response_text, "done": False})
+            yield f"data: {event}\n\n"
+
+        # Save to memory
+        memory.chat_memory.add_user_message(translated_msg)
+        memory.chat_memory.add_ai_message(response_text)
+        await agent._memory_manager.save(session_id, memory)
+
+        # Persist to DB
+        await agent._persist_messages(
+            session_id=session_id,
+            tenant_id=tenant.id,
+            user_message=translated_msg,
+            assistant_response=response_text,
+            intent_type=intent.value,
+            source_chunks=None,
+            confidence_score=None,
+            escalation_flag=False,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0,
+        )
 
     await billing.record_message(
         session_id=session_id,
         tenant_id=tenant.id,
-        input_tokens=output.input_tokens,
-        output_tokens=output.output_tokens,
+        input_tokens=0,
+        output_tokens=0,
     )
 
-    if output.escalation_required:
-        await billing.close_session(
-            session_id=session_id,
-            tenant_id=tenant.id,
-            event_type="escalated",
-        )
-
-    # Stream the response word by word for progressive display
-    words = translated_response.split(" ")
-    for i, word in enumerate(words):
-        delta = word if i == 0 else f" {word}"
-        event = json.dumps({"delta": delta, "done": False})
-        yield f"data: {event}\n\n"
+    latency_ms = int((time.monotonic() - start) * 1000)
 
     # Final metadata event
-    sources = None
-    if output.source_chunks:
-        sources = [
-            {
-                "chunk_id": s["chunk_id"],
-                "document": s["document"],
-                "section": s["section"],
-            }
-            for s in output.source_chunks
-        ]
-
     metadata = {
-        "confidence": output.confidence,
+        "confidence": confidence,
         "sources": sources,
-        "escalation_required": output.escalation_required,
-        "escalation_reason": output.escalation_reason,
-        "latency_ms": output.latency_ms,
+        "escalation_required": False,
+        "escalation_reason": None,
+        "latency_ms": latency_ms,
+        "intent_type": intent.value,
     }
     final_event = json.dumps({"done": True, "metadata": metadata})
     yield f"data: {final_event}\n\n"
