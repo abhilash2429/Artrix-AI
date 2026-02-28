@@ -157,6 +157,7 @@ async def send_message(
         escalation_required=output.escalation_required,
         escalation_reason=output.escalation_reason,
         latency_ms=output.latency_ms,
+        intent_type=output.intent_type.value,
     )
 
 
