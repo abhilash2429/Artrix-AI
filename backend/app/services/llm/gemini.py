@@ -1,6 +1,6 @@
 """Google Gemini LLM provider implementation.
 
-Uses google-generativeai SDK with Gemini 1.5 Flash model.
+Uses google-generativeai SDK with Gemini Flash model.
 Instantiated once via dependency injection in app/api/deps.py.
 All external calls have a 10-second timeout and structured error logging.
 """
@@ -17,13 +17,13 @@ from app.services.llm.base import LLMProvider, LLMResponse
 logger = structlog.get_logger(__name__)
 
 _TIMEOUT_SECONDS = 10
-_EMBEDDING_MODEL = "models/text-embedding-004"
+_EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 
 class GeminiProvider(LLMProvider):
     """Gemini 1.5 Flash implementation of LLMProvider."""
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
         genai.configure(api_key=api_key)
         self._model_name = model
         logger.info("gemini_provider_initialized", model=model)
@@ -54,9 +54,29 @@ class GeminiProvider(LLMProvider):
                 generation_config=generation_config,
                 request_options={"timeout": _TIMEOUT_SECONDS},
             )
+            # Safe text extraction — response.text throws when Gemini
+            # returns no valid Part (safety block, empty candidates).
+            try:
+                text = response.text
+            except (ValueError, AttributeError):
+                # Extract from candidates manually if .text accessor fails
+                text = ""
+                if response.candidates:
+                    try:
+                        for part in response.candidates[0].content.parts:
+                            if hasattr(part, "text") and part.text:
+                                text += part.text
+                    except (IndexError, AttributeError):
+                        pass
+                if not text:
+                    logger.warning(
+                        "gemini_empty_response",
+                        prompt_len=len(prompt),
+                        candidates=len(response.candidates) if response.candidates else 0,
+                    )
             usage = response.usage_metadata
             result = LLMResponse(
-                text=response.text,
+                text=text,
                 input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
                 output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
             )
@@ -110,7 +130,7 @@ class GeminiProvider(LLMProvider):
             raise RuntimeError(f"Gemini stream failed: {e}") from e
 
     async def embed(self, text: str) -> list[float]:
-        """Generate embedding using Google text-embedding-004.
+        """Generate embedding using Google gemini-embedding-001.
 
         The genai.embed_content SDK call is synchronous, so we run it
         in a thread pool to avoid blocking the async event loop.
