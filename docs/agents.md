@@ -669,7 +669,7 @@ import google.generativeai as genai
 from .base import LLMProvider
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model)
         # ...implement all abstract methods
