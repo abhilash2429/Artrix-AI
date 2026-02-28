@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { AgentMessage, AgentSource } from "@/types/agent"
 import type { VerticalConfig } from "@/lib/config/verticals"
-import { configureAgent, endSession, sendMessage, startSession } from "@/lib/api/agent"
+import { configureAgent, endSession, sendMessageStreaming, startSession } from "@/lib/api/agent"
 
 interface ChatMetadata {
   confidence: number | null
@@ -97,32 +97,62 @@ export function useChat(vertical: VerticalConfig): UseChatReturn {
       setIsLoading(true)
 
       try {
-        const res = await sendMessage(sessionId, content)
-
+        // Create a placeholder assistant message for streaming
+        const assistantMsgId = crypto.randomUUID()
         const assistantMsg: AgentMessage = {
-          id: res.message_id,
+          id: assistantMsgId,
           role: "assistant",
-          content: res.response,
+          content: "",
           timestamp: new Date().toISOString(),
-          intentType: res.intent_type,
-          confidence: res.confidence,
-          sources: res.sources,
-          escalationRequired: res.escalation_required,
-          escalationReason: res.escalation_reason,
-          latencyMs: res.latency_ms,
         }
         setMessages((prev) => [...prev, assistantMsg])
 
-        setCurrentMetadata({
-          confidence: res.confidence,
-          sources: res.sources,
-          intentType: res.intent_type,
-          latencyMs: res.latency_ms,
+        await sendMessageStreaming(sessionId, content, {
+          onDelta: (delta) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, content: m.content + delta }
+                  : m
+              )
+            )
+          },
+          onDone: (metadata) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      intentType: metadata.intent_type,
+                      confidence: metadata.confidence,
+                      sources: metadata.sources,
+                      escalationRequired: metadata.escalation_required,
+                      escalationReason: metadata.escalation_reason,
+                      latencyMs: metadata.latency_ms,
+                    }
+                  : m
+              )
+            )
+            setCurrentMetadata({
+              confidence: metadata.confidence,
+              sources: metadata.sources,
+              intentType: metadata.intent_type,
+              latencyMs: metadata.latency_ms,
+            })
+            if (metadata.escalation_required) {
+              setIsEscalated(true)
+            }
+          },
+          onError: (error) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, content: "Sorry, something went wrong. Please try again." }
+                  : m
+              )
+            )
+          },
         })
-
-        if (res.escalation_required) {
-          setIsEscalated(true)
-        }
       } catch {
         const errorMsg: AgentMessage = {
           id: crypto.randomUUID(),
