@@ -219,6 +219,20 @@ class RetrievalService:
         """
         start = time.monotonic()
         tid = str(tenant_id)
+        await self._qdrant.create_collection_if_not_exists(tid)
+
+        # Fast exit: if collection is empty, skip entire pipeline
+        point_count = await self._qdrant.collection_point_count(tid)
+        if point_count == 0:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            logger.debug("retrieval_empty_collection", tenant_id=tid, latency_ms=latency_ms)
+            return RetrievalOutput(
+                results=[],
+                confidence=0.0,
+                should_escalate=False,
+                escalation_reason=None,
+                retrieval_latency_ms=latency_ms,
+            )
 
         # 1. Parallel dense + sparse retrieval
         dense_results, sparse_results = await asyncio.gather(
