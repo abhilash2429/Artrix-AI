@@ -1,0 +1,12 @@
+/* Artrix AI — Widget Styles
+ *
+ * Core styles are injected by widget.js via <style> tag.
+ * This file provides supplementary/override styles for custom deployments.
+ *
+ * CSS Custom Properties available:
+ *   --agent-primary: brand color (from data-primary-color)
+ *   --agent-radius: border radius (12px)
+ *   --agent-shadow: box shadow
+ */
+
+/* Override styles for custom deployments can be placed here */

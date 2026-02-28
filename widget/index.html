@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Artrix AI — Chat Widget Demo</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 0; padding: 40px; background: #f5f5f5; }
+        h1 { color: #333; }
+        p { color: #666; max-width: 600px; line-height: 1.6; }
+        code { background: #e8e8e8; padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>Artrix AI — Widget Demo</h1>
+    <p>This page demonstrates the embeddable chat widget. Click the chat button in the bottom-right corner to start a conversation.</p>
+    <p>To embed this widget on your site, add a single script tag:</p>
+    <pre><code>&lt;script
+  src="https://cdn.yourdomain.com/widget.js"
+  data-api-key="ent_live_xxxx"
+  data-api-url="https://api.yourdomain.com"
+  data-persona="Aria"
+  data-primary-color="#0066FF"
+  data-position="bottom-right"
+&gt;&lt;/script&gt;</code></pre>
+
+    <!-- Embeddable widget — single script tag -->
+    <script
+        src="widget.js"
+        data-api-key="ent_live_demo"
+        data-api-url="http://localhost:8000"
+        data-persona="Aria"
+        data-primary-color="#0066FF"
+        data-position="bottom-right"
+    ></script>
+</body>
+</html>
