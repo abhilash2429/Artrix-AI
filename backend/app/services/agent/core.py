@@ -204,28 +204,93 @@ class AgentCore:
         message: str,
         tenant_config: dict[str, Any],
     ) -> AgentTurnOutput:
-        """Process a single user message through the full agent turn flow."""
+        """Process a single user message through the full agent turn flow.
+
+        Uses a single LLM call for classify+respond (conversational/oos)
+        to cut latency from 2 round-trips to 1 for non-RAG paths.
+        """
         start = time.monotonic()
 
-        # Step 1: Intent classification
         vertical = tenant_config.get("vertical", "general")
         allowed_topics = tenant_config.get("allowed_topics", [])
-        intent = await self._intent_router.classify(
-            message, vertical, allowed_topics
+        persona_name = tenant_config.get("persona_name", "Assistant")
+
+        # ── Single combined classify+respond call ──────────────────
+        memory = await self._memory_manager.load(session_id)
+        chat_history = self._format_chat_history(memory)
+        system_prompt = self._build_system_prompt(tenant_config)
+
+        combined_prompt = (
+            f"You are a router AND responder for a {vertical} support agent.\n"
+            f"Allowed topics: {', '.join(allowed_topics)}\n\n"
+            f"Chat history:\n{chat_history}\n"
+            f"User message: \"{message}\"\n\n"
+            "Step 1 — classify this message as exactly ONE of:\n"
+            "  conversational | domain_query | out_of_scope\n\n"
+            "Step 2 — if conversational or out_of_scope, write a helpful reply "
+            f"as {persona_name}.\n"
+            "If domain_query, write ONLY \"needs_retrieval\".\n\n"
+            "Format your response EXACTLY like this:\n"
+            "INTENT: <label>\n"
+            "RESPONSE: <your reply or needs_retrieval>"
         )
 
-        # Step 2: Branch on intent
-        if intent == IntentType.CONVERSATIONAL:
-            output = await self._handle_conversational(
-                session_id, tenant_id, message, tenant_config
+        intent = IntentType.CONVERSATIONAL
+        combined_response: str | None = None
+
+        try:
+            result = await self._llm.generate(
+                prompt=combined_prompt,
+                system_prompt=system_prompt,
+                max_tokens=300,
+                temperature=0.4,
             )
-        elif intent == IntentType.DOMAIN_QUERY:
+            raw = result.text.strip()
+            intent, combined_response = self._parse_combined_response(raw)
+            logger.debug(
+                "combined_classify_ok",
+                intent=intent.value,
+                has_response=combined_response is not None,
+                message_len=len(message),
+            )
+        except Exception as e:
+            logger.warning("combined_classify_failed", error=str(e))
+            # Fallback: treat as conversational with static greeting
+            intent = IntentType.CONVERSATIONAL
+            combined_response = None
+
+        # ── Branch on intent ──────────────────────────────────────
+        if intent == IntentType.DOMAIN_QUERY:
             output = await self._handle_domain_query(
                 session_id, tenant_id, message, tenant_config
             )
+        elif intent == IntentType.OUT_OF_SCOPE:
+            response_text = combined_response or (
+                "That's outside what I can help with. "
+                f"I can assist with: {', '.join(allowed_topics)}."
+            )
+            memory.chat_memory.add_user_message(message)
+            memory.chat_memory.add_ai_message(response_text)
+            await self._memory_manager.save(session_id, memory)
+            output = AgentTurnOutput(
+                response=response_text,
+                intent_type=IntentType.OUT_OF_SCOPE,
+                input_tokens=self._count_tokens(message),
+                output_tokens=self._count_tokens(response_text),
+            )
         else:
-            output = await self._handle_out_of_scope(
-                session_id, tenant_id, message, tenant_config
+            # CONVERSATIONAL — response already generated in combined call
+            response_text = combined_response or (
+                f"Hi there! I'm {persona_name}. How can I help you today?"
+            )
+            memory.chat_memory.add_user_message(message)
+            memory.chat_memory.add_ai_message(response_text)
+            await self._memory_manager.save(session_id, memory)
+            output = AgentTurnOutput(
+                response=response_text,
+                intent_type=IntentType.CONVERSATIONAL,
+                input_tokens=self._count_tokens(message),
+                output_tokens=self._count_tokens(response_text),
             )
 
         # Persist messages to Postgres
@@ -261,6 +326,48 @@ class AgentCore:
 
         return output
 
+    @staticmethod
+    def _parse_combined_response(raw: str) -> tuple[IntentType, str | None]:
+        """Parse the combined classify+respond LLM output.
+
+        Expected format:
+            INTENT: <label>
+            RESPONSE: <text or needs_retrieval>
+
+        Returns (intent, response_text_or_None).
+        """
+        intent = IntentType.CONVERSATIONAL
+        response: str | None = None
+
+        lines = raw.split("\n", 1)
+        first_line = lines[0].strip().lower()
+
+        # Parse intent from first line
+        if "intent:" in first_line:
+            label = first_line.split("intent:", 1)[1].strip().strip("`\"'.,")
+            for t in IntentType:
+                if t.value.startswith(label) and len(label) >= 4:
+                    intent = t
+                    break
+                if label == t.value:
+                    intent = t
+                    break
+        elif any(t.value in first_line for t in IntentType):
+            for t in IntentType:
+                if t.value in first_line:
+                    intent = t
+                    break
+
+        # Parse response from second part
+        if len(lines) > 1:
+            resp_part = lines[1].strip()
+            if resp_part.lower().startswith("response:"):
+                resp_part = resp_part[9:].strip()
+            if resp_part and resp_part.lower() != "needs_retrieval":
+                response = resp_part
+
+        return intent, response
+
     # ── Branch A: CONVERSATIONAL ────────────────────────────────────
 
     async def _handle_conversational(
@@ -277,26 +384,42 @@ class AgentCore:
         chat_history = self._format_chat_history(memory)
         prompt = f"{chat_history}User: {message}\nAssistant:"
 
-        result = await self._llm.generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            max_tokens=500,
-            temperature=0.5,
-        )
+        persona_name = tenant_config.get("persona_name", "Assistant")
+        try:
+            result = await self._llm.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=500,
+                temperature=0.5,
+            )
+            response_text = result.text.strip()
+            input_tokens = result.input_tokens
+            output_tokens = result.output_tokens
+        except Exception:
+            response_text = ""
+            input_tokens = 0
+            output_tokens = 0
+
+        # If LLM returned empty (blocked by safety filter), use a
+        # static greeting so the user isn't left with a 500 error.
+        if not response_text:
+            response_text = (
+                f"Hi there! I'm {persona_name}. How can I help you today?"
+            )
 
         memory.chat_memory.add_user_message(message)
-        memory.chat_memory.add_ai_message(result.text)
+        memory.chat_memory.add_ai_message(response_text)
         await self._memory_manager.save(session_id, memory)
 
         return AgentTurnOutput(
-            response=result.text,
+            response=response_text,
             intent_type=IntentType.CONVERSATIONAL,
             confidence=None,
             source_chunks=None,
             escalation_required=False,
             escalation_reason=None,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     # ── Branch B: DOMAIN_QUERY──────────────────────────────────────
@@ -330,6 +453,19 @@ class AgentCore:
             tenant_id=tenant_id,
             tenant_config=retrieval_config,
         )
+
+        # If retrieval returned zero results (empty knowledge base),
+        # fall back to conversational response instead of escalating.
+        # The spec says escalation is for knowledge GAPS, not empty KBs.
+        if not retrieval_output.results:
+            logger.info(
+                "domain_query_empty_kb_fallback",
+                session_id=str(session_id),
+                message_len=len(message),
+            )
+            return await self._handle_conversational(
+                session_id, tenant_id, message, tenant_config
+            )
 
         # Check escalation
         if retrieval_output.should_escalate:
