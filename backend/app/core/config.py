@@ -1,20 +1,44 @@
 """Application configuration via pydantic-settings.
 
-All values loaded from environment variables / .env file.
+All values loaded from .env file at the project root.
+The .env file takes precedence over OS-level environment variables
+so stale system env vars never shadow the project config.
 No hardcoded secrets anywhere.
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
+from typing import Any, Tuple, Type
+
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+# Resolve .env from project root (three levels up from this file: app/core/config.py → backend → project root)
+_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
-    """Central application settings. Loaded from env vars / .env file."""
+    """Central application settings. .env file wins over OS env vars."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        """Override source priority: .env file > OS env vars > defaults."""
+        return (init_settings, dotenv_settings, env_settings, file_secret_settings)
 
     # --- LLM ---
     gemini_api_key: str = ""
