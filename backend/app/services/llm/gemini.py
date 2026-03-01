@@ -11,7 +11,7 @@ from typing import AsyncIterator
 import google.generativeai as genai
 import structlog
 
-from app.core.exceptions import EmbeddingTimeoutError
+from app.core.exceptions import EmbeddingTimeoutError, RateLimitExceededError
 from app.services.llm.base import LLMProvider, LLMResponse
 
 logger = structlog.get_logger(__name__)
@@ -20,10 +20,15 @@ _TIMEOUT_SECONDS = 10
 _EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 
+def _is_quota_error(error_text: str) -> bool:
+    text = error_text.lower()
+    return "429" in text or "quota exceeded" in text or "rate limit" in text
+
+
 class GeminiProvider(LLMProvider):
     """Gemini 1.5 Flash implementation of LLMProvider."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         genai.configure(api_key=api_key)
         self._model_name = model
         logger.info("gemini_provider_initialized", model=model)
@@ -88,12 +93,17 @@ class GeminiProvider(LLMProvider):
             )
             return result
         except Exception as e:
+            message = str(e)
             logger.error(
                 "gemini_generate_failed",
-                error=str(e),
+                error=message,
                 model=self._model_name,
                 prompt_len=len(prompt),
             )
+            if _is_quota_error(message):
+                raise RateLimitExceededError(
+                    "Gemini quota exceeded. Update GEMINI_API_KEY to a billed project or retry later."
+                ) from e
             raise RuntimeError(f"Gemini generate failed: {e}") from e
 
     async def stream(
@@ -121,12 +131,17 @@ class GeminiProvider(LLMProvider):
                     yield chunk.text
             logger.debug("gemini_stream_ok", prompt_len=len(prompt))
         except Exception as e:
+            message = str(e)
             logger.error(
                 "gemini_stream_failed",
-                error=str(e),
+                error=message,
                 model=self._model_name,
                 prompt_len=len(prompt),
             )
+            if _is_quota_error(message):
+                raise RateLimitExceededError(
+                    "Gemini quota exceeded. Update GEMINI_API_KEY to a billed project or retry later."
+                ) from e
             raise RuntimeError(f"Gemini stream failed: {e}") from e
 
     async def embed(self, text: str) -> list[float]:

@@ -37,8 +37,8 @@ class Session(Base):
     # Relationships
     tenant: Mapped["Tenant"] = relationship(back_populates="sessions")  # noqa: F821
     messages: Mapped[list["Message"]] = relationship(  # noqa: F821
-        back_populates="session", lazy="selectin"
+        back_populates="session", lazy="noload"
     )
     billing_events: Mapped[list["BillingEvent"]] = relationship(  # noqa: F821
-        back_populates="session", lazy="selectin"
+        back_populates="session", lazy="noload"
     )

@@ -18,6 +18,7 @@ import tiktoken
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import RateLimitExceededError
 from app.models.message import Message
 from app.services.agent.escalation import EscalationService
 from app.services.agent.intent_router import IntentRouter, IntentType
@@ -253,6 +254,8 @@ class AgentCore:
                 has_response=combined_response is not None,
                 message_len=len(message),
             )
+        except RateLimitExceededError:
+            raise
         except Exception as e:
             logger.warning("combined_classify_failed", error=str(e))
             # Fallback: treat as conversational with static greeting
@@ -395,6 +398,8 @@ class AgentCore:
             response_text = result.text.strip()
             input_tokens = result.input_tokens
             output_tokens = result.output_tokens
+        except RateLimitExceededError:
+            raise
         except Exception:
             response_text = ""
             input_tokens = 0

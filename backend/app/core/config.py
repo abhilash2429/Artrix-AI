@@ -41,6 +41,7 @@ class Settings(BaseSettings):
         return (init_settings, dotenv_settings, env_settings, file_secret_settings)
 
     # --- LLM ---
+    cerebras_api_key: str = ""
     gemini_api_key: str = ""
 
     # --- Database ---

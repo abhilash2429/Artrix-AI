@@ -3,13 +3,15 @@
 All routes prefixed /v1. CORS configured per tenant domain_whitelist.
 Auto-generated OpenAPI docs at /docs.
 
-The singleton GeminiProvider (implementing LLMProvider with generate/stream/embed)
+A FallbackLLMProvider wrapping CerebrasProvider (primary) and GeminiProvider (fallback)
 is created once during the lifespan and stored on app.state for injection via Depends().
 Idle session cleanup runs every 5 minutes via APScheduler.
 """
 
 from contextlib import asynccontextmanager
+import logging
 from typing import AsyncGenerator
+import warnings
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,7 +30,28 @@ from app.db.postgres import async_session_factory, close_postgres
 from app.db.qdrant import close_qdrant
 from app.db.redis import RedisClient, close_redis, get_redis
 from app.services.billing import BillingService
+from app.services.llm.cerebras import CerebrasProvider
+from app.services.llm.fallback import FallbackLLMProvider
 from app.services.llm.gemini import GeminiProvider
+
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 .* doesn't match a supported version!",
+    category=Warning,
+)
+
+
+def _configure_logging() -> None:
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        cache_logger_on_first_use=True,
+    )
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+
+_configure_logging()
 
 logger = structlog.get_logger(__name__)
 
@@ -57,9 +80,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # --- Startup ---
     logger.info("app_startup", env=settings.app_env)
 
-    app.state.llm_provider = GeminiProvider(
+    cerebras = CerebrasProvider(
+        api_key=settings.cerebras_api_key,
+        model="llama3.1-8b",
+    )
+    gemini = GeminiProvider(
         api_key=settings.gemini_api_key,
-        model="gemini-2.5-flash",
+        model="gemini-2.0-flash",
+    )
+    app.state.llm_provider = FallbackLLMProvider(
+        primary=cerebras,
+        secondary=gemini,
     )
 
     # Start APScheduler for idle session cleanup every 5 minutes

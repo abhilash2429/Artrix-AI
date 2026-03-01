@@ -1,6 +1,6 @@
 """Shared FastAPI dependencies — auth, database sessions, service injection.
 
-The singleton GeminiProvider (implementing LLMProvider) is created once during
+The FallbackLLMProvider (Cerebras primary + Gemini fallback) is created once during
 the FastAPI lifespan and stored on app.state. All downstream code retrieves
 it via Depends() — never by direct import. embed() lives on LLMProvider.
 """

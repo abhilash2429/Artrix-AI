@@ -30,16 +30,17 @@ class Tenant(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # Relationships
+    # Relationships — lazy="noload" to avoid loading all rows on every request.
+    # Use explicit eager loading only when needed (e.g., admin dashboards).
     sessions: Mapped[list["Session"]] = relationship(  # noqa: F821
-        back_populates="tenant", lazy="selectin"
+        back_populates="tenant", lazy="noload"
     )
     messages: Mapped[list["Message"]] = relationship(  # noqa: F821
-        back_populates="tenant", lazy="selectin"
+        back_populates="tenant", lazy="noload"
     )
     billing_events: Mapped[list["BillingEvent"]] = relationship(  # noqa: F821
-        back_populates="tenant", lazy="selectin"
+        back_populates="tenant", lazy="noload"
     )
     knowledge_documents: Mapped[list["KnowledgeDocument"]] = relationship(  # noqa: F821
-        back_populates="tenant", lazy="selectin"
+        back_populates="tenant", lazy="noload"
     )

@@ -43,6 +43,7 @@ _OPTIONAL_MODULES = [
     "google.generativeai.types",
     "google.ai",
     "google.ai.generativelanguage",
+    "openai",
     # Document parsing
     "unstructured",
     "unstructured.partition",
