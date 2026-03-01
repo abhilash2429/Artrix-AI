@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { AgentMessage, AgentSource } from "@/types/agent"
 import type { VerticalConfig } from "@/lib/config/verticals"
-import { configureAgent, endSession, sendMessageStreaming, startSession } from "@/lib/api/agent"
+import { ApiError, configureAgent, endSession, sendMessage, startSession } from "@/lib/api/agent"
 
 interface ChatMetadata {
   confidence: number | null
@@ -97,67 +97,38 @@ export function useChat(vertical: VerticalConfig): UseChatReturn {
       setIsLoading(true)
 
       try {
-        // Create a placeholder assistant message for streaming
-        const assistantMsgId = crypto.randomUUID()
+        const response = await sendMessage(sessionId, content)
         const assistantMsg: AgentMessage = {
-          id: assistantMsgId,
+          id: response.message_id,
           role: "assistant",
-          content: "",
+          content: response.response,
           timestamp: new Date().toISOString(),
+          intentType: response.intent_type,
+          confidence: response.confidence,
+          sources: response.sources,
+          escalationRequired: response.escalation_required,
+          escalationReason: response.escalation_reason,
+          latencyMs: response.latency_ms,
         }
         setMessages((prev) => [...prev, assistantMsg])
-
-        await sendMessageStreaming(sessionId, content, {
-          onDelta: (delta) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, content: m.content + delta }
-                  : m
-              )
-            )
-          },
-          onDone: (metadata) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? {
-                      ...m,
-                      intentType: metadata.intent_type,
-                      confidence: metadata.confidence,
-                      sources: metadata.sources,
-                      escalationRequired: metadata.escalation_required,
-                      escalationReason: metadata.escalation_reason,
-                      latencyMs: metadata.latency_ms,
-                    }
-                  : m
-              )
-            )
-            setCurrentMetadata({
-              confidence: metadata.confidence,
-              sources: metadata.sources,
-              intentType: metadata.intent_type,
-              latencyMs: metadata.latency_ms,
-            })
-            if (metadata.escalation_required) {
-              setIsEscalated(true)
-            }
-          },
-          onError: (error) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, content: "Sorry, something went wrong. Please try again." }
-                  : m
-              )
-            )
-          },
+        setCurrentMetadata({
+          confidence: response.confidence,
+          sources: response.sources,
+          intentType: response.intent_type,
+          latencyMs: response.latency_ms,
         })
-      } catch {
+        if (response.escalation_required) {
+          setIsEscalated(true)
+        }
+      } catch (error) {
+        const errorText =
+          error instanceof ApiError && error.status === 429
+            ? "The AI service is rate-limited right now. Please retry in a minute."
+            : "Sorry, something went wrong. Please try again."
         const errorMsg: AgentMessage = {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "Sorry, something went wrong. Please try again.",
+          content: errorText,
           timestamp: new Date().toISOString(),
         }
         setMessages((prev) => [...prev, errorMsg])
